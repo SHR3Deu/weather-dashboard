@@ -17,6 +17,12 @@ class CloudsLayer(Layer):
         "meteorology/weather/satellite/geo/"
     )
 
+    PRODUCT_DIRECTORIES = {
+        "vis-ir": "vis-ir",
+        "ir108": "ir108",
+        "24m": "24M",
+    }
+
     CACHE_DIR = config.CACHE / "clouds"
 
     REQUEST_HEADERS = {
@@ -55,6 +61,9 @@ class CloudsLayer(Layer):
         self.timeout = tuple(
             getattr(config, "CLOUDS_REQUEST_TIMEOUT", (10, 30))
         )
+        self.max_age_minutes = int(
+            getattr(config, "CLOUDS_MAX_AGE_MINUTES", 45)
+        )
 
         self.source_north = float(
             getattr(config, "CLOUDS_SOURCE_NORTH", 53.0)
@@ -88,44 +97,98 @@ class CloudsLayer(Layer):
 
         return cache_file.name
 
-    def _list_available_files(self):
+    def _normalize_product(self, product):
+        return str(product).strip().lower()
+
+    def _product_url(self, product):
+        normalized = self._normalize_product(product)
+        directory = self.PRODUCT_DIRECTORIES.get(normalized)
+
+        if directory is None:
+            raise RuntimeError(f"Neznámý cloud produkt: {product}")
+
+        return normalized, f"{self.INDEX_URL}{directory}/"
+
+    def _list_available_files(self, product):
+        """Načte seznam JPG přímo z adresáře daného produktu."""
+        normalized, product_url = self._product_url(product)
+
         response = requests.get(
-            self.INDEX_URL,
+            product_url,
             headers=self.REQUEST_HEADERS,
             timeout=self.timeout,
         )
         response.raise_for_status()
 
         files = re.findall(
-            r'href=["\']([^"\']+_geo_[a-z0-9\-]+_cz\.jpg)["\']',
+            r'href=["\']([^"\']+_geo_[^"\']+_cz\.jpg)["\']',
             response.text,
             flags=re.IGNORECASE,
         )
 
-        return sorted(set(files))
-
-    def _detect_product(self, available_files):
-        requested = self.product.lower()
+        expected_suffix = f"_geo_{normalized}_cz.jpg"
         matching = [
-            name for name in available_files
-            if f"_geo_{requested}_cz.jpg" in name.lower()
+            name for name in files
+            if name.lower().endswith(expected_suffix)
         ]
 
-        if matching:
-            return requested, matching[-1]
+        return normalized, product_url, sorted(set(matching))
 
-        fallback_order = ["vis-ir", "ir108", "24m"]
+    def _product_order(self):
+        requested = self._normalize_product(self.product)
+        order = [requested, "vis-ir", "ir108", "24m"]
 
-        for fallback in fallback_order:
-            matching = [
-                name for name in available_files
-                if f"_geo_{fallback}_cz.jpg" in name.lower()
-            ]
-            if matching:
-                return fallback, matching[-1]
+        result = []
+        for product in order:
+            if product in self.PRODUCT_DIRECTORIES and product not in result:
+                result.append(product)
 
+        return result
+
+    def _file_age_minutes(self, filename):
+        timestamp = self._parse_timestamp(filename)
+        if timestamp is None:
+            return None
+
+        age = dt.datetime.utcnow() - timestamp
+        return max(0, int(age.total_seconds() // 60))
+
+    def _find_latest_product(self):
+        errors = []
+
+        for product in self._product_order():
+            try:
+                normalized, product_url, files = (
+                    self._list_available_files(product)
+                )
+            except requests.RequestException as error:
+                errors.append(f"{product}: {error}")
+                continue
+
+            if not files:
+                errors.append(f"{product}: bez CZ snímků")
+                continue
+
+            latest = files[-1]
+            age_minutes = self._file_age_minutes(latest)
+
+            if (
+                self.max_age_minutes > 0
+                and age_minutes is not None
+                and age_minutes > self.max_age_minutes
+            ):
+                print(
+                    f"[Clouds] Produkt {normalized} je starý "
+                    f"{age_minutes} minut, zkouším další produkt."
+                )
+                continue
+
+            return normalized, latest, product_url
+
+        detail = "; ".join(errors) if errors else "bez detailu"
         raise RuntimeError(
-            "Na serveru ČHMÚ nebyl nalezen použitelný satelitní snímek."
+            "Na serveru ČHMÚ nebyl nalezen čerstvý použitelný "
+            f"satelitní snímek ({detail})."
         )
 
     def download(self):
@@ -133,8 +196,7 @@ class CloudsLayer(Layer):
         self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
         try:
-            available_files = self._list_available_files()
-            product, latest = self._detect_product(available_files)
+            product, latest, product_url = self._find_latest_product()
 
             cache_file = self._cache_file(product)
             cache_source_file = self._cache_source_file(product)
@@ -147,7 +209,7 @@ class CloudsLayer(Layer):
                     return product, latest, cache_file
 
             response = requests.get(
-                self.INDEX_URL + latest,
+                product_url + latest,
                 headers=self.REQUEST_HEADERS,
                 timeout=self.timeout,
             )
@@ -165,7 +227,7 @@ class CloudsLayer(Layer):
             return product, latest, cache_file
 
         except (requests.RequestException, RuntimeError) as error:
-            for fallback_product in [self.product, "vis-ir", "ir108", "24m"]:
+            for fallback_product in self._product_order():
                 cache_file = self._cache_file(fallback_product)
                 if cache_file.exists():
                     print(
