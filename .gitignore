@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+
+venv/
+.env
+
+cache/
+
+latest_radar.png
+
+*.log
+
+.DS_Store
