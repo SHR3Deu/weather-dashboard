@@ -62,9 +62,9 @@ BASEMAP_STYLES = {
         "extension": "jpg",
         "format": "JPEG",
         # Záměrně lehce ztmaveno kvůli kontrastu oblačnosti a radaru.
-        "brightness": 0.70,
-        "contrast": 0.92,
-        "color": 0.88,
+        "brightness": 0.60,
+        "contrast": 0.90,
+        "color": 0.70,
         "attribution": "Zdroj podkladu: Esri World Imagery",
     },
 }
