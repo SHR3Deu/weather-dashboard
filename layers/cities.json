@@ -1,0 +1,27 @@
+[
+    {
+        "name": "Svitavy",
+        "lat": 49.7559,
+        "lon": 16.4683
+    },
+    {
+        "name": "Lanškroun",
+        "lat": 49.9122,
+        "lon": 16.6119
+    },
+    {
+        "name": "Ústí nad Orlicí",
+        "lat": 49.9738,
+        "lon": 16.3936
+    },
+    {
+        "name": "Česká Třebová",
+        "lat": 49.9044,
+        "lon": 16.4441
+    },
+    {
+        "name": "Letohrad",
+        "lat": 50.0356,
+        "lon": 16.4988
+    }
+]
