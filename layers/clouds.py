@@ -1,5 +1,6 @@
 import datetime as dt
 import re
+import shutil
 
 import numpy as np
 import requests
@@ -34,16 +35,19 @@ class CloudsLayer(Layer):
 
     def __init__(self):
         self.product = getattr(config, "CLOUDS_PRODUCT", "vis-ir")
-        self.opacity = float(getattr(config, "CLOUDS_OPACITY", 0.42))
-        self.gamma = float(getattr(config, "CLOUDS_GAMMA", 1.15))
+        self.opacity = float(getattr(config, "CLOUDS_OPACITY", 0.78))
+        self.gamma = float(getattr(config, "CLOUDS_GAMMA", 0.95))
         self.min_strength = float(
-            getattr(config, "CLOUDS_MIN_STRENGTH", 0.10)
+            getattr(config, "CLOUDS_MIN_STRENGTH", 0.015)
         )
-        self.blur_radius = float(
-            getattr(config, "CLOUDS_BLUR_RADIUS", 2.0)
+        self.source_blur_radius = float(
+            getattr(config, "CLOUDS_SOURCE_BLUR_RADIUS", 0.8)
         )
-        self.downscale_factor = int(
-            getattr(config, "CLOUDS_DOWNSCALE_FACTOR", 4)
+        self.projected_blur_radius = float(
+            getattr(config, "CLOUDS_PROJECTED_BLUR_RADIUS", 10.0)
+        )
+        self.base_brightness = float(
+            getattr(config, "CLOUDS_BASE_BRIGHTNESS", 42.0)
         )
         self.save_debug_layer = bool(
             getattr(config, "CLOUDS_SAVE_DEBUG_LAYER", True)
@@ -57,6 +61,11 @@ class CloudsLayer(Layer):
             config,
             "CLOUDS_PREVIEW_FILE",
             config.OUTPUT_DIR / "latest_clouds_preview.png",
+        )
+        self.source_debug_file = getattr(
+            config,
+            "CLOUDS_SOURCE_DEBUG_FILE",
+            config.OUTPUT_DIR / "latest_clouds_source.jpg",
         )
         self.timeout = tuple(
             getattr(config, "CLOUDS_REQUEST_TIMEOUT", (10, 30))
@@ -243,8 +252,7 @@ class CloudsLayer(Layer):
             raise
 
     def load(self, image_file):
-        image = Image.open(image_file).convert("RGB")
-        return image
+        return Image.open(image_file).convert("RGB")
 
     def _parse_timestamp(self, filename):
         match = re.search(r"(\d{12})_geo_", filename)
@@ -257,30 +265,21 @@ class CloudsLayer(Layer):
             return None
 
     def _prepare_source(self, source):
-        image = source
+        if self.source_blur_radius <= 0:
+            return source
 
-        if self.downscale_factor > 1:
-            reduced_size = (
-                max(1, source.width // self.downscale_factor),
-                max(1, source.height // self.downscale_factor),
-            )
-            image = image.resize(reduced_size, Image.Resampling.BILINEAR)
-
-        if self.blur_radius > 0:
-            image = image.filter(ImageFilter.GaussianBlur(self.blur_radius))
-
-        if image.size != source.size:
-            image = image.resize(source.size, Image.Resampling.BILINEAR)
-
-        return image
+        return source.filter(
+            ImageFilter.GaussianBlur(self.source_blur_radius)
+        )
 
     def create_image(self, source, product):
         """
-        Převede satelitní JPG na jemnou cloud vrstvu.
+        Převede satelitní JPG na poloprůhlednou vrstvu oblačnosti.
 
-        Předchozí jednoduché prahování jasu zachytávalo i JPEG bloky.
-        Nová verze proto nejdřív zdroj zjemní a pak hledá pouze barevné
-        charakteristiky odpovídající oblačnosti ve VIS-IR / IR snímku.
+        VIS-IR používá tmavý povrch a světlé žluté, bílé nebo namodralé
+        mraky. Maska proto kombinuje jas, barevný nádech oblačnosti a
+        potlačení zeleného povrchu. Není zde tvrdý vysoký práh, takže
+        zůstane viditelná i slabší oblačnost.
         """
         prepared = self._prepare_source(source)
         data = np.asarray(prepared, dtype=np.float32)
@@ -290,71 +289,106 @@ class CloudsLayer(Layer):
         b = data[:, :, 2]
 
         brightness = (0.299 * r) + (0.587 * g) + (0.114 * b)
-        maxc = np.max(data, axis=2)
-        minc = np.min(data, axis=2)
-        saturation = maxc - minc
+        saturation = np.max(data, axis=2) - np.min(data, axis=2)
 
-        # Jasná bílá oblačnost.
-        white_strength = np.clip((brightness - 150.0) / 85.0, 0.0, 1.0)
-        white_strength *= np.clip((80.0 - saturation) / 80.0, 0.0, 1.0)
+        green_dominance = np.clip(
+            (g - ((r + b) / 2.0) - 2.0) / 30.0,
+            0.0,
+            1.0,
+        )
 
-        # Vysoká oblačnost ve VIS-IR bývá modravá až cyan.
-        blue_strength = np.clip((b - 125.0) / 100.0, 0.0, 1.0)
-        blue_strength *= np.clip((b - g + 18.0) / 90.0, 0.0, 1.0)
-        blue_strength *= np.clip((b - r + 12.0) / 90.0, 0.0, 1.0)
+        general_brightness = np.clip(
+            (brightness - self.base_brightness) / 85.0,
+            0.0,
+            1.0,
+        )
+        general_brightness *= 1.0 - (0.65 * green_dominance)
 
-        # Nízká a střední oblačnost může být nažloutlá.
-        yellow_base = np.minimum(r, g)
-        yellow_strength = np.clip((yellow_base - 150.0) / 90.0, 0.0, 1.0)
-        yellow_strength *= np.clip((170.0 - b) / 120.0, 0.0, 1.0)
-        yellow_strength *= np.clip((r - 120.0) / 100.0, 0.0, 1.0)
-        yellow_strength *= np.clip((g - 120.0) / 100.0, 0.0, 1.0)
+        white_strength = np.clip(
+            (brightness - (self.base_brightness + 6.0)) / 95.0,
+            0.0,
+            1.0,
+        )
+        white_strength *= np.clip(
+            (65.0 - saturation) / 65.0,
+            0.0,
+            1.0,
+        )
+
+        yellow_strength = np.clip(
+            (np.minimum(r, g) - b + 3.0) / 35.0,
+            0.0,
+            1.0,
+        )
+        yellow_strength *= np.clip(
+            (np.minimum(r, g) - self.base_brightness) / 100.0,
+            0.0,
+            1.0,
+        )
+
+        violet_strength = np.clip(
+            (((r + b) / 2.0) - g + 5.0) / 35.0,
+            0.0,
+            1.0,
+        )
+        violet_strength *= np.clip(
+            (np.maximum(r, b) - self.base_brightness) / 100.0,
+            0.0,
+            1.0,
+        )
 
         if product == "ir108":
-            # Noční / IR snímek je spíš šedotónový.
-            cloud_strength = np.clip((brightness - 120.0) / 120.0, 0.0, 1.0)
+            cloud_strength = np.clip(
+                (brightness - 52.0) / 105.0,
+                0.0,
+                1.0,
+            )
         else:
             cloud_strength = np.maximum.reduce([
-                white_strength,
-                blue_strength * 0.90,
-                yellow_strength * 0.85,
+                general_brightness * 0.65,
+                white_strength * 0.90,
+                yellow_strength,
+                violet_strength,
             ])
 
         if self.gamma > 0:
-            cloud_strength = np.power(cloud_strength, self.gamma)
+            cloud_strength = np.power(
+                np.clip(cloud_strength, 0.0, 1.0),
+                self.gamma,
+            )
 
         cloud_strength[cloud_strength < self.min_strength] = 0.0
 
-        alpha = np.clip(cloud_strength * self.opacity * 255.0, 0, 255)
+        alpha = np.clip(
+            cloud_strength * self.opacity * 255.0,
+            0.0,
+            255.0,
+        )
+
+        # Slabá oblačnost je světle šedá, silná téměř bílá. Na světlé
+        # topografické mapě je tak vrstva viditelnější než čistě bílá.
+        cloud_gray = np.clip(
+            190.0 + (55.0 * cloud_strength),
+            0.0,
+            255.0,
+        ).astype(np.uint8)
 
         rgba = np.zeros((source.height, source.width, 4), dtype=np.uint8)
-
-        # Jemné zabarvení podle typu oblačnosti, aby to působilo živěji,
-        # ale zároveň nerušilo HMI pozadí.
-        rgba[:, :, 0] = np.clip(
-            255.0 - (blue_strength * 18.0),
-            0,
-            255,
-        ).astype(np.uint8)
-        rgba[:, :, 1] = np.clip(
-            255.0 - (yellow_strength * 8.0),
-            0,
-            255,
-        ).astype(np.uint8)
+        rgba[:, :, 0] = cloud_gray
+        rgba[:, :, 1] = cloud_gray
         rgba[:, :, 2] = np.clip(
-            255.0 - (yellow_strength * 28.0),
+            cloud_gray.astype(np.int16) + 3,
             0,
             255,
         ).astype(np.uint8)
         rgba[:, :, 3] = alpha.astype(np.uint8)
 
-        layer = Image.fromarray(rgba, mode="RGBA")
-
-        visible_pixels = int(np.count_nonzero(rgba[:, :, 3]))
+        layer = Image.fromarray(rgba, "RGBA")
 
         return layer, {
-            "visible_pixels": visible_pixels,
+            "visible_pixels": int(np.count_nonzero(rgba[:, :, 3])),
             "mean_alpha": float(alpha.mean()),
+            "max_alpha": int(alpha.max()),
         }
 
     def project_to_canvas(self, layer, canvas, basemap):
@@ -376,7 +410,6 @@ class CloudsLayer(Layer):
             )
 
         source_width, source_height = layer.size
-
         scale_x = source_width / source_width_on_map
         scale_y = source_height / source_height_on_map
 
@@ -397,6 +430,14 @@ class CloudsLayer(Layer):
             fillcolor=(0, 0, 0, 0),
         )
 
+        # Satelitní zdroj má proti lokální mapě nízké rozlišení. Změkčení
+        # až po promítnutí odstraní zvětšené bloky jednotlivých pixelů.
+        if self.projected_blur_radius > 0:
+            alpha = projected.getchannel("A").filter(
+                ImageFilter.GaussianBlur(self.projected_blur_radius)
+            )
+            projected.putalpha(alpha)
+
         visible_pixels = int(
             np.count_nonzero(np.asarray(projected.getchannel("A")))
         )
@@ -409,7 +450,7 @@ class CloudsLayer(Layer):
             "visible_pixels": visible_pixels,
         }
 
-    def save_debug_images(self, projected, canvas):
+    def save_debug_images(self, projected, canvas, image_file):
         if not self.save_debug_layer:
             return
 
@@ -419,6 +460,8 @@ class CloudsLayer(Layer):
         preview = canvas.copy()
         preview.paste(projected, (0, 0), projected)
         preview.save(self.preview_file)
+
+        shutil.copy2(image_file, self.source_debug_file)
 
     def draw(self, canvas, basemap):
         try:
@@ -431,16 +474,15 @@ class CloudsLayer(Layer):
                 basemap,
             )
 
-            self.save_debug_images(projected, canvas)
+            self.save_debug_images(projected, canvas, image_file)
             canvas.paste(projected, (0, 0), projected)
 
-            timestamp = self._parse_timestamp(filename)
-            age_text = "neznámé"
-
-            if timestamp is not None:
-                age = dt.datetime.utcnow() - timestamp
-                age_minutes = max(0, int(age.total_seconds() // 60))
-                age_text = f"{age_minutes} minut"
+            age_minutes = self._file_age_minutes(filename)
+            age_text = (
+                f"{age_minutes} minut"
+                if age_minutes is not None
+                else "neznámé"
+            )
 
             print(f"[Clouds] Soubor: {filename}")
             print(f"[Clouds] Produkt: {product}")
@@ -462,10 +504,26 @@ class CloudsLayer(Layer):
             print(
                 f"[Clouds] Průměrná alfa: {source_info['mean_alpha']:.2f}"
             )
+            print(f"[Clouds] Maximální alfa: {source_info['max_alpha']}")
 
             if self.save_debug_layer:
                 print(f"[Clouds] Uložena vrstva: {self.debug_file}")
                 print(f"[Clouds] Uložen náhled: {self.preview_file}")
+                print(
+                    "[Clouds] Uložen zdrojový snímek: "
+                    f"{self.source_debug_file}"
+                )
+
+            if source_info["visible_pixels"] == 0:
+                print(
+                    "[Clouds] Zdrojová maska je prázdná. Sniž "
+                    "CLOUDS_BASE_BRIGHTNESS nebo CLOUDS_MIN_STRENGTH."
+                )
+            elif projection_info["visible_pixels"] == 0:
+                print(
+                    "[Clouds] Oblačnost ve zdroji existuje, ale mimo "
+                    "aktuální zobrazenou oblast."
+                )
 
         except Exception as error:
             print(f"[Clouds] Chyba: {error}")
