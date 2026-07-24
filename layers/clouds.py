@@ -33,23 +33,26 @@ class CloudsLayer(Layer):
             getattr(config, "CLOUDS_MAX_AGE_MINUTES", 45)
         )
 
-        self.opacity = float(getattr(config, "CLOUDS_OPACITY", 0.38))
-        self.gamma = float(getattr(config, "CLOUDS_GAMMA", 1.05))
+        self.opacity = float(getattr(config, "CLOUDS_OPACITY", 0.52))
+        self.gamma = float(getattr(config, "CLOUDS_GAMMA", 0.95))
         self.min_strength = float(
-            getattr(config, "CLOUDS_MIN_STRENGTH", 0.035)
+            getattr(config, "CLOUDS_MIN_STRENGTH", 0.020)
         )
         self.base_brightness = float(
-            getattr(config, "CLOUDS_BASE_BRIGHTNESS", 24.0)
+            getattr(config, "CLOUDS_BASE_BRIGHTNESS", 12.0)
         )
 
+        self.source_downscale_factor = int(
+            getattr(config, "CLOUDS_SOURCE_DOWNSCALE_FACTOR", 4)
+        )
         self.source_blur_radius = float(
-            getattr(config, "CLOUDS_SOURCE_BLUR_RADIUS", 1.2)
+            getattr(config, "CLOUDS_SOURCE_BLUR_RADIUS", 1.6)
         )
         self.background_blur_radius = float(
-            getattr(config, "CLOUDS_BACKGROUND_BLUR_RADIUS", 24.0)
+            getattr(config, "CLOUDS_BACKGROUND_BLUR_RADIUS", 18.0)
         )
         self.projected_blur_radius = float(
-            getattr(config, "CLOUDS_PROJECTED_BLUR_RADIUS", 4.0)
+            getattr(config, "CLOUDS_PROJECTED_BLUR_RADIUS", 5.0)
         )
 
         self.save_debug_layer = bool(
@@ -201,7 +204,10 @@ class CloudsLayer(Layer):
                     f"{last_error}"
                 )
                 cache_source_file = self._cache_source_file(product)
-                filename = cache_source_file.read_text(encoding="utf-8").strip() if cache_source_file.exists() else cache_file.name
+                filename = (
+                    cache_source_file.read_text(encoding="utf-8").strip()
+                    if cache_source_file.exists() else cache_file.name
+                )
                 return product, filename, cache_file
 
         raise RuntimeError(last_error or "Cloud snímek se nepodařilo získat.")
@@ -214,18 +220,30 @@ class CloudsLayer(Layer):
         return source
 
     def _mask_timestamp_overlay(self, strength):
-        # V IR snímcích je vpravo nahoře černý pruh s bílým timestampem.
         h, w = strength.shape
         strength[0:min(24, h), max(0, w - 260):w] = 0.0
         return strength
 
-    def create_image(self, source, product):
-        prepared = source
-        if self.source_blur_radius > 0:
-            prepared = prepared.filter(
-                ImageFilter.GaussianBlur(self.source_blur_radius)
-            )
+    def _preprocess_source(self, source):
+        image = source
 
+        if self.source_downscale_factor > 1:
+            reduced_size = (
+                max(1, source.width // self.source_downscale_factor),
+                max(1, source.height // self.source_downscale_factor),
+            )
+            image = image.resize(reduced_size, Image.Resampling.BILINEAR)
+
+        if self.source_blur_radius > 0:
+            image = image.filter(ImageFilter.GaussianBlur(self.source_blur_radius))
+
+        if image.size != source.size:
+            image = image.resize(source.size, Image.Resampling.BILINEAR)
+
+        return image
+
+    def create_image(self, source, product):
+        prepared = self._preprocess_source(source)
         data = np.asarray(prepared, dtype=np.float32)
         r = data[:, :, 0]
         g = data[:, :, 1]
@@ -240,52 +258,55 @@ class CloudsLayer(Layer):
         background = np.asarray(background_img, dtype=np.float32)
 
         detail = gray - background
+        p10 = float(np.percentile(gray, 10))
+        p90 = float(np.percentile(gray, 90))
+        p98 = float(np.percentile(gray, 98))
+        denom90 = max(1.0, p90 - p10)
+        denom98 = max(1.0, p98 - p10)
 
         if product == "ir108":
-            # IR snímek je v podstatě šedotónový. Reálné mraky chceme podle
-            # lokálního zesvětlení vůči okolí, ne podle absolutního jasu,
-            # jinak se jako mrak tváří téměř celý snímek.
-            local_strength = np.clip((detail - 2.0) / 22.0, 0.0, 1.0)
-            abs_strength = np.clip((gray - 150.0) / 70.0, 0.0, 1.0)
-            cloud_strength = np.maximum(local_strength, abs_strength * 0.55)
+            local_strength = np.clip((detail - 0.8) / 10.0, 0.0, 1.0)
+            abs_strength = np.clip((gray - (p10 + 0.55 * denom98)) / (0.45 * denom98), 0.0, 1.0)
+            cloud_strength = np.maximum(local_strength * 0.95, abs_strength * 0.50)
+
             color_rgb = np.dstack([
-                np.full_like(gray, 248.0),
-                np.full_like(gray, 248.0),
-                np.full_like(gray, 248.0),
+                np.full_like(gray, 246.0),
+                np.full_like(gray, 246.0),
+                np.full_like(gray, 246.0),
             ])
         else:
             saturation = np.max(data, axis=2) - np.min(data, axis=2)
 
-            white_strength = np.clip((gray - 150.0) / 75.0, 0.0, 1.0)
-            white_strength *= np.clip((90.0 - saturation) / 90.0, 0.0, 1.0)
+            white_strength = np.clip((gray - (p10 + 0.58 * denom90)) / (0.42 * denom90), 0.0, 1.0)
+            white_strength *= np.clip((70.0 - saturation) / 70.0, 0.0, 1.0)
 
-            blue_strength = np.clip((b - 120.0) / 100.0, 0.0, 1.0)
-            blue_strength *= np.clip((b - g + 14.0) / 80.0, 0.0, 1.0)
-            blue_strength *= np.clip((b - r + 10.0) / 80.0, 0.0, 1.0)
+            blue_strength = np.clip((b - (p10 + 0.50 * denom90)) / (0.55 * denom90), 0.0, 1.0)
+            blue_strength *= np.clip((b - g + 8.0) / 45.0, 0.0, 1.0)
+            blue_strength *= np.clip((b - r + 8.0) / 45.0, 0.0, 1.0)
 
             yellow_base = np.minimum(r, g)
-            yellow_strength = np.clip((yellow_base - 135.0) / 110.0, 0.0, 1.0)
-            yellow_strength *= np.clip((r - b + 18.0) / 100.0, 0.0, 1.0)
-            yellow_strength *= np.clip((g - b + 18.0) / 100.0, 0.0, 1.0)
+            yellow_strength = np.clip((yellow_base - (p10 + 0.48 * denom90)) / (0.60 * denom90), 0.0, 1.0)
+            yellow_strength *= np.clip((r - b + 8.0) / 55.0, 0.0, 1.0)
+            yellow_strength *= np.clip((g - b + 8.0) / 55.0, 0.0, 1.0)
 
-            local_strength = np.clip((detail - 2.0) / 18.0, 0.0, 1.0)
+            local_strength = np.clip((detail - 0.8) / 9.0, 0.0, 1.0)
 
             cloud_strength = np.maximum.reduce([
                 white_strength,
                 blue_strength * 0.85,
                 yellow_strength * 0.75,
-                local_strength * 0.65,
+                local_strength * 0.55,
             ])
 
             color_rgb = np.dstack([
-                250.0 - (blue_strength * 10.0),
-                250.0 - (yellow_strength * 4.0),
-                250.0 - (yellow_strength * 16.0),
+                248.0 - (blue_strength * 9.0),
+                248.0 - (yellow_strength * 3.0),
+                248.0 - (yellow_strength * 12.0),
             ])
 
         if self.base_brightness > 0:
             base_strength = np.clip((gray - self.base_brightness) / 255.0, 0.0, 1.0)
-            cloud_strength = np.maximum(cloud_strength, base_strength * 0.10)
+            cloud_strength = np.maximum(cloud_strength, base_strength * 0.06)
 
         cloud_strength = self._mask_timestamp_overlay(cloud_strength)
 
@@ -295,6 +316,9 @@ class CloudsLayer(Layer):
         cloud_strength[cloud_strength < self.min_strength] = 0.0
 
         alpha = np.clip(cloud_strength * self.opacity * 255.0, 0.0, 255.0)
+        alpha_img = Image.fromarray(alpha.astype(np.uint8), mode="L")
+        alpha_img = alpha_img.filter(ImageFilter.MedianFilter(size=3))
+        alpha = np.asarray(alpha_img, dtype=np.float32)
 
         rgba = np.zeros((source.height, source.width, 4), dtype=np.uint8)
         rgba[:, :, :3] = np.clip(color_rgb, 0.0, 255.0).astype(np.uint8)
