@@ -5,7 +5,7 @@ from PIL import Image
 
 import config
 from utils.projection import latlon_to_world_pixel
-
+from osgeo import osr
 
 class Basemap:
 
@@ -101,4 +101,44 @@ class Basemap:
             156543.03392
             * cos(radians(config.CENTER_LAT))
             / (2 ** config.ZOOM)
+        )
+    def viewport_bounds_3857(self):
+
+        tile = self.meta["tile_size"]
+
+        world_left = (
+            self.meta["tile_origin_x"] * tile
+            + self.viewport_left
+        )
+
+        world_top = (
+            self.meta["tile_origin_y"] * tile
+            + self.viewport_top
+        )
+
+        world_right = world_left + config.MAP_WIDTH
+
+        world_bottom = world_top + config.MAP_HEIGHT
+
+        origin = (
+            2 * 6378137 * 3.141592653589793
+        ) / 2
+
+        scale = (
+            2 * origin
+        ) / (
+            tile * (2 ** self.meta["zoom"])
+        )
+
+        minx = world_left * scale - origin
+        maxx = world_right * scale - origin
+
+        maxy = origin - world_top * scale
+        miny = origin - world_bottom * scale
+
+        return (
+            minx,
+            miny,
+            maxx,
+            maxy,
         )

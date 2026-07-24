@@ -5,6 +5,9 @@ venv/
 .env
 
 cache/
+output/
+
+latest_radar.png
 
 *.log
 

@@ -3,23 +3,24 @@
 import shutil
 
 import config
-
+from layers.cities import CitiesLayer
+from layers.debug import DebugLayer
+from layers.radar import RadarLayer
+from layers.scale import ScaleLayer
 from utils.basemap import Basemap
 
-from layers.debug import DebugLayer
-from layers.cities import CitiesLayer
-from layers.scale import ScaleLayer
-from layers.radar import RadarLayer
-# from layers.lightning import LightningLayer
 # from layers.aircraft import AircraftLayer
+# from layers.lightning import LightningLayer
 # from layers.weather import WeatherLayer
 
 
+# Pořadí je současně pořadím kreslení odspodu nahoru.
+# Radar je pod městy, měřítkem a případnou debug vrstvou.
 LAYERS = {
+    "radar": RadarLayer(),
     "debug": DebugLayer(),
     "cities": CitiesLayer(),
     "scale": ScaleLayer(),
-    "radar": RadarLayer(),
     # "lightning": LightningLayer(),
     # "aircraft": AircraftLayer(),
     # "weather": WeatherLayer(),
@@ -27,6 +28,10 @@ LAYERS = {
 
 
 def main():
+    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if hasattr(config, "PUBLIC_FILE"):
+        config.PUBLIC_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     basemap = Basemap()
     basemap.load()
@@ -34,12 +39,10 @@ def main():
     canvas = basemap.viewport()
 
     for name, layer in LAYERS.items():
-
         if not config.LAYERS.get(name, True):
             continue
 
         print(f"Drawing {name}")
-
         layer.draw(canvas, basemap)
 
     canvas.save(config.OUTPUT_FILE)
