@@ -11,3 +11,7 @@ latest_radar.png
 *.log
 
 .DS_Store
+
+# Výstupy ponechat v Git repozitáři
+!output/
+!output/**
