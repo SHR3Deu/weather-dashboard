@@ -1,0 +1,20 @@
+{
+    "style": "topographic",
+    "style_name": "OpenTopoMap",
+    "attribution": "© OpenStreetMap přispěvatelé, SRTM | © OpenTopoMap (CC-BY-SA)",
+    "zoom": 12,
+    "tile_origin_x": 2232,
+    "tile_origin_y": 1387,
+    "tiles_x": 10,
+    "tiles_y": 7,
+    "tile_size": 256,
+    "width": 2560,
+    "height": 1792,
+    "center_lat": 49.9949023,
+    "center_lon": 16.4978017,
+    "center_world_x": 572341.3303204977,
+    "center_world_y": 355642.16955431376,
+    "brightness": 1.0,
+    "contrast": 1.0,
+    "color": 1.0
+}

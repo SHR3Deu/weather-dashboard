@@ -21,25 +21,74 @@ PUBLIC_FILE = Path.home() / ".node-red" / "public" / "weather.png"
 
 
 #
-# Basemapa
-#
-BASEMAP_IMAGE = RESOURCES / "basemap" / "z12.png"
-BASEMAP_INFO = RESOURCES / "basemap" / "z12.json"
-
-
-#
-# Rozměry mapy
+# Rozměry a poloha mapy
 #
 MAP_WIDTH = 1600
 MAP_HEIGHT = 960
-
-
-#
-# Poloha mapy
-#
 CENTER_LAT = 49.9949023
 CENTER_LON = 16.4978017
 ZOOM = 12
+
+
+#
+# Podkladová mapa
+#
+# Povolené hodnoty:
+#   "topographic" - současná turistická OpenTopoMap
+#   "satellite"   - satelitní Esri World Imagery
+BASEMAP_STYLE = "satellite"
+
+BASEMAP_STYLES = {
+    "topographic": {
+        "name": "OpenTopoMap",
+        "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+        "extension": "png",
+        "format": "PNG",
+        "brightness": 1.00,
+        "contrast": 1.00,
+        "color": 1.00,
+        "attribution": (
+            "© OpenStreetMap přispěvatelé, SRTM | "
+            "© OpenTopoMap (CC-BY-SA)"
+        ),
+    },
+    "satellite": {
+        "name": "Esri World Imagery",
+        # ArcGIS používá pořadí z / y / x.
+        "url": (
+            "https://services.arcgisonline.com/ArcGIS/rest/services/"
+            "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        ),
+        "extension": "jpg",
+        "format": "JPEG",
+        # Záměrně lehce ztmaveno kvůli kontrastu oblačnosti a radaru.
+        "brightness": 0.70,
+        "contrast": 0.92,
+        "color": 0.88,
+        "attribution": "Zdroj podkladu: Esri World Imagery",
+    },
+}
+
+BASEMAP_REQUEST_TIMEOUT = (10, 30)
+BASEMAP_USER_AGENT = (
+    "weather-dashboard/1.0 "
+    "(+https://github.com/SHR3Deu/weather-dashboard)"
+)
+BASEMAP_SHOW_ATTRIBUTION = True
+BASEMAP_ATTRIBUTION_FONT_SIZE = 13
+
+# Odvozené cesty aktivní podkladové mapy.
+BASEMAP_IMAGE = (
+    RESOURCES
+    / "basemap"
+    / f"{BASEMAP_STYLE}_z{ZOOM}."
+    f"{BASEMAP_STYLES[BASEMAP_STYLE]['extension']}"
+)
+BASEMAP_INFO = (
+    RESOURCES
+    / "basemap"
+    / f"{BASEMAP_STYLE}_z{ZOOM}.json"
+)
 
 
 #
@@ -78,8 +127,6 @@ CLOUDS_INDEX_BASE_URL = (
 CLOUDS_REQUEST_TIMEOUT = (10, 30)
 
 # Přibližné zeměpisné hranice obrazu ČHMÚ s označením "cz".
-# Pro HMI pozadí je tato přesnost dostačující. Po prvním vykreslení
-# je možné hranice jemně doladit podle shody oblačnosti s mapou.
 CLOUDS_SOURCE_NORTH = 53.0
 CLOUDS_SOURCE_WEST = 11.0
 CLOUDS_SOURCE_SOUTH = 47.0
@@ -88,23 +135,17 @@ CLOUDS_SOURCE_EAST = 20.0
 # Vzhled oblačnosti nad mapou.
 CLOUDS_PRODUCT = "vis-ir"
 CLOUDS_MAX_AGE_MINUTES = 45
-
 CLOUDS_OPACITY = 0.52
 CLOUDS_GAMMA = 0.95
 CLOUDS_MIN_STRENGTH = 0.020
 CLOUDS_BASE_BRIGHTNESS = 12.0
-
 CLOUDS_SOURCE_DOWNSCALE_FACTOR = 4
 CLOUDS_SOURCE_BLUR_RADIUS = 1.6
 CLOUDS_BACKGROUND_BLUR_RADIUS = 18.0
 CLOUDS_PROJECTED_BLUR_RADIUS = 5.0
 
-# Ladicí výstupy.
+# Ladicí výstupy oblačnosti.
 CLOUDS_SAVE_DEBUG_LAYER = True
 CLOUDS_DEBUG_FILE = OUTPUT_DIR / "latest_clouds.png"
 CLOUDS_PREVIEW_FILE = OUTPUT_DIR / "latest_clouds_preview.png"
 CLOUDS_SOURCE_DEBUG_FILE = OUTPUT_DIR / "latest_clouds_source.jpg"
-
-LAYERS["clouds"] = True
-
-
