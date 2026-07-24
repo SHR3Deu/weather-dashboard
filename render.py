@@ -4,6 +4,7 @@ import shutil
 
 import config
 from layers.cities import CitiesLayer
+from layers.clouds import CloudsLayer
 from layers.debug import DebugLayer
 from layers.radar import RadarLayer
 from layers.scale import ScaleLayer
@@ -15,8 +16,12 @@ from utils.basemap import Basemap
 
 
 # Pořadí je současně pořadím kreslení odspodu nahoru.
-# Radar je pod městy, měřítkem a případnou debug vrstvou.
+# 1) mapa
+# 2) oblačnost
+# 3) radar / srážky
+# 4) popisky a měřítko
 LAYERS = {
+    "clouds": CloudsLayer(),
     "radar": RadarLayer(),
     "debug": DebugLayer(),
     "cities": CitiesLayer(),

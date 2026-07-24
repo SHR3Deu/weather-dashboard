@@ -31,8 +31,18 @@ class RadarLayer(Layer):
         )
     }
 
-    # Slabší radarové odrazy zůstanou průhledné, aby nezakrývaly mapu.
-    MIN_VISIBLE_DBZ = 5.0
+    def __init__(self):
+        self.min_visible_dbz = float(
+            getattr(config, "RADAR_MIN_VISIBLE_DBZ", 0.0)
+        )
+        self.save_debug_layer = bool(
+            getattr(config, "RADAR_SAVE_DEBUG_LAYER", True)
+        )
+        self.debug_file = getattr(
+            config,
+            "RADAR_DEBUG_FILE",
+            config.OUTPUT_DIR / "latest_radar.png",
+        )
 
     def get_cached_filename(self):
         if self.CACHE_SOURCE_FILE.exists():
@@ -176,46 +186,63 @@ class RadarLayer(Layer):
             + metadata["offset"]
         )
 
-        visible = valid & (dbz >= self.MIN_VISIBLE_DBZ)
+        visible = valid & (dbz >= self.min_visible_dbz)
+        source_visible_pixels = int(np.count_nonzero(visible))
+        valid_dbz = dbz[valid]
 
+        # Velmi slabé odrazy – jemná modrá, aby byl radar viditelný
+        # i při slabých srážkách.
+        rgba[(dbz >= self.min_visible_dbz) & (dbz < 5) & visible] = (
+            180,
+            240,
+            255,
+            70,
+        )
         rgba[(dbz >= 5) & (dbz < 15) & visible] = (
             0,
             170,
             255,
-            85,
+            95,
         )
         rgba[(dbz >= 15) & (dbz < 25) & visible] = (
             0,
             255,
             190,
-            110,
+            120,
         )
         rgba[(dbz >= 25) & (dbz < 35) & visible] = (
             50,
             230,
             50,
-            140,
+            150,
         )
         rgba[(dbz >= 35) & (dbz < 45) & visible] = (
             255,
             230,
             0,
-            165,
+            175,
         )
         rgba[(dbz >= 45) & (dbz < 55) & visible] = (
             255,
             130,
             0,
-            190,
+            200,
         )
         rgba[(dbz >= 55) & visible] = (
             255,
             0,
             40,
-            220,
+            225,
         )
 
-        return Image.fromarray(rgba)
+        image = Image.fromarray(rgba)
+
+        return image, {
+            "source_visible_pixels": source_visible_pixels,
+            "source_valid_pixels": int(np.count_nonzero(valid)),
+            "min_dbz": float(valid_dbz.min()) if valid_dbz.size else None,
+            "max_dbz": float(valid_dbz.max()) if valid_dbz.size else None,
+        }
 
     def project_to_canvas(self, radar, metadata, canvas, basemap):
         """
@@ -268,41 +295,83 @@ class RadarLayer(Layer):
             np.count_nonzero(np.asarray(projected.getchannel("A")))
         )
 
-        # Canvas basemapy je RGB, proto se vrstva vkládá přes alfa masku.
-        canvas.paste(projected, (0, 0), projected)
+        return projected, {
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "visible_pixels": visible_pixels,
+        }
 
-        return left, top, right, bottom, visible_pixels
+    def save_debug_image(self, projected):
+        if not self.save_debug_layer:
+            return
+
+        self.debug_file.parent.mkdir(parents=True, exist_ok=True)
+        projected.save(self.debug_file)
 
     def draw(self, canvas, basemap):
         try:
             filename = self.download()
             data, metadata = self.load()
-            radar = self.create_image(data, metadata)
-
-            left, top, right, bottom, visible_pixels = (
-                self.project_to_canvas(
-                    radar,
-                    metadata,
-                    canvas,
-                    basemap,
-                )
+            radar, source_info = self.create_image(data, metadata)
+            projected, projection_info = self.project_to_canvas(
+                radar,
+                metadata,
+                canvas,
+                basemap,
             )
+
+            self.save_debug_image(projected)
+
+            # Canvas basemapy je RGB, proto se vrstva vkládá přes alfa masku.
+            canvas.paste(projected, (0, 0), projected)
 
             print(f"[Radar] Soubor: {filename}")
             print(f"[Radar] Zdroj: {data.shape[1]} x {data.shape[0]} px")
             print(
                 "[Radar] Oblast na mapě: "
-                f"({left}, {top}) až ({right}, {bottom})"
+                f"({projection_info['left']}, {projection_info['top']}) až "
+                f"({projection_info['right']}, {projection_info['bottom']})"
+            )
+            print(
+                f"[Radar] Práh zobrazení: {self.min_visible_dbz:g} dBZ"
+            )
+            print(
+                "[Radar] Platné pixely ve zdroji: "
+                f"{source_info['source_valid_pixels']}"
+            )
+            print(
+                "[Radar] Viditelné pixely ve zdroji: "
+                f"{source_info['source_visible_pixels']}"
             )
             print(
                 "[Radar] Viditelné pixely ve viewportu: "
-                f"{visible_pixels}"
+                f"{projection_info['visible_pixels']}"
             )
 
-            if visible_pixels == 0:
+            if source_info["min_dbz"] is not None:
                 print(
-                    "[Radar] Ve zobrazené oblasti nyní není odraz "
-                    f"nad {self.MIN_VISIBLE_DBZ:g} dBZ."
+                    "[Radar] Rozsah dBZ ve zdroji: "
+                    f"{source_info['min_dbz']:.1f} až "
+                    f"{source_info['max_dbz']:.1f}"
+                )
+
+            if self.save_debug_layer:
+                print(
+                    "[Radar] Uložena debug vrstva: "
+                    f"{self.debug_file}"
+                )
+
+            if source_info["source_visible_pixels"] == 0:
+                print(
+                    "[Radar] V radarových datech nyní není odraz nad "
+                    f"{self.min_visible_dbz:g} dBZ."
+                )
+            elif projection_info["visible_pixels"] == 0:
+                print(
+                    "[Radar] Odraz v datech existuje, ale mimo aktuální "
+                    "zobrazenou oblast."
                 )
 
         except Exception as error:
