@@ -1,6 +1,6 @@
 import datetime as dt
 import re
-import shutil
+from pathlib import Path
 
 import numpy as np
 import requests
@@ -13,18 +13,10 @@ from layers.base import Layer
 class CloudsLayer(Layer):
     name = "Clouds"
 
-    INDEX_URL = (
+    BASE_URL = (
         "https://opendata.chmi.cz/"
         "meteorology/weather/satellite/geo/"
     )
-
-    PRODUCT_DIRECTORIES = {
-        "vis-ir": "vis-ir",
-        "ir108": "ir108",
-        "24m": "24M",
-    }
-
-    CACHE_DIR = config.CACHE / "clouds"
 
     REQUEST_HEADERS = {
         "User-Agent": (
@@ -34,44 +26,59 @@ class CloudsLayer(Layer):
     }
 
     def __init__(self):
+        self.cache_dir = config.CACHE / "clouds"
+
         self.product = getattr(config, "CLOUDS_PRODUCT", "vis-ir")
-        self.opacity = float(getattr(config, "CLOUDS_OPACITY", 0.78))
-        self.gamma = float(getattr(config, "CLOUDS_GAMMA", 0.95))
+        self.max_age_minutes = int(
+            getattr(config, "CLOUDS_MAX_AGE_MINUTES", 45)
+        )
+
+        self.opacity = float(getattr(config, "CLOUDS_OPACITY", 0.38))
+        self.gamma = float(getattr(config, "CLOUDS_GAMMA", 1.05))
         self.min_strength = float(
-            getattr(config, "CLOUDS_MIN_STRENGTH", 0.015)
-        )
-        self.source_blur_radius = float(
-            getattr(config, "CLOUDS_SOURCE_BLUR_RADIUS", 0.8)
-        )
-        self.projected_blur_radius = float(
-            getattr(config, "CLOUDS_PROJECTED_BLUR_RADIUS", 10.0)
+            getattr(config, "CLOUDS_MIN_STRENGTH", 0.035)
         )
         self.base_brightness = float(
-            getattr(config, "CLOUDS_BASE_BRIGHTNESS", 42.0)
+            getattr(config, "CLOUDS_BASE_BRIGHTNESS", 24.0)
         )
+
+        self.source_blur_radius = float(
+            getattr(config, "CLOUDS_SOURCE_BLUR_RADIUS", 1.2)
+        )
+        self.background_blur_radius = float(
+            getattr(config, "CLOUDS_BACKGROUND_BLUR_RADIUS", 24.0)
+        )
+        self.projected_blur_radius = float(
+            getattr(config, "CLOUDS_PROJECTED_BLUR_RADIUS", 4.0)
+        )
+
         self.save_debug_layer = bool(
             getattr(config, "CLOUDS_SAVE_DEBUG_LAYER", True)
         )
-        self.debug_file = getattr(
-            config,
-            "CLOUDS_DEBUG_FILE",
-            config.OUTPUT_DIR / "latest_clouds.png",
+        self.debug_file = Path(
+            getattr(
+                config,
+                "CLOUDS_DEBUG_FILE",
+                config.OUTPUT_DIR / "latest_clouds.png",
+            )
         )
-        self.preview_file = getattr(
-            config,
-            "CLOUDS_PREVIEW_FILE",
-            config.OUTPUT_DIR / "latest_clouds_preview.png",
+        self.preview_file = Path(
+            getattr(
+                config,
+                "CLOUDS_PREVIEW_FILE",
+                config.OUTPUT_DIR / "latest_clouds_preview.png",
+            )
         )
-        self.source_debug_file = getattr(
-            config,
-            "CLOUDS_SOURCE_DEBUG_FILE",
-            config.OUTPUT_DIR / "latest_clouds_source.jpg",
+        self.source_debug_file = Path(
+            getattr(
+                config,
+                "CLOUDS_SOURCE_DEBUG_FILE",
+                config.OUTPUT_DIR / "latest_clouds_source.jpg",
+            )
         )
+
         self.timeout = tuple(
             getattr(config, "CLOUDS_REQUEST_TIMEOUT", (10, 30))
-        )
-        self.max_age_minutes = int(
-            getattr(config, "CLOUDS_MAX_AGE_MINUTES", 45)
         )
 
         self.source_north = float(
@@ -87,172 +94,19 @@ class CloudsLayer(Layer):
             getattr(config, "CLOUDS_SOURCE_EAST", 20.0)
         )
 
-    def _cache_file(self, product=None):
-        name = product or self.product
-        return self.CACHE_DIR / f"latest_{name}.jpg"
-
-    def _cache_source_file(self, product=None):
-        name = product or self.product
-        return self.CACHE_DIR / f"latest_{name}.txt"
-
-    def _get_cached_filename(self, product=None):
-        source_file = self._cache_source_file(product)
-        cache_file = self._cache_file(product)
-
-        if source_file.exists():
-            cached_name = source_file.read_text(encoding="utf-8").strip()
-            if cached_name:
-                return cached_name
-
-        return cache_file.name
-
-    def _normalize_product(self, product):
-        return str(product).strip().lower()
+    def _product_dir(self, product):
+        if product == "24m":
+            return "24M"
+        return product
 
     def _product_url(self, product):
-        normalized = self._normalize_product(product)
-        directory = self.PRODUCT_DIRECTORIES.get(normalized)
+        return f"{self.BASE_URL}{self._product_dir(product)}/"
 
-        if directory is None:
-            raise RuntimeError(f"Neznámý cloud produkt: {product}")
+    def _cache_file(self, product):
+        return self.cache_dir / f"latest_{product}.jpg"
 
-        return normalized, f"{self.INDEX_URL}{directory}/"
-
-    def _list_available_files(self, product):
-        """Načte seznam JPG přímo z adresáře daného produktu."""
-        normalized, product_url = self._product_url(product)
-
-        response = requests.get(
-            product_url,
-            headers=self.REQUEST_HEADERS,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-
-        files = re.findall(
-            r'href=["\']([^"\']+_geo_[^"\']+_cz\.jpg)["\']',
-            response.text,
-            flags=re.IGNORECASE,
-        )
-
-        expected_suffix = f"_geo_{normalized}_cz.jpg"
-        matching = [
-            name for name in files
-            if name.lower().endswith(expected_suffix)
-        ]
-
-        return normalized, product_url, sorted(set(matching))
-
-    def _product_order(self):
-        requested = self._normalize_product(self.product)
-        order = [requested, "vis-ir", "ir108", "24m"]
-
-        result = []
-        for product in order:
-            if product in self.PRODUCT_DIRECTORIES and product not in result:
-                result.append(product)
-
-        return result
-
-    def _file_age_minutes(self, filename):
-        timestamp = self._parse_timestamp(filename)
-        if timestamp is None:
-            return None
-
-        age = dt.datetime.utcnow() - timestamp
-        return max(0, int(age.total_seconds() // 60))
-
-    def _find_latest_product(self):
-        errors = []
-
-        for product in self._product_order():
-            try:
-                normalized, product_url, files = (
-                    self._list_available_files(product)
-                )
-            except requests.RequestException as error:
-                errors.append(f"{product}: {error}")
-                continue
-
-            if not files:
-                errors.append(f"{product}: bez CZ snímků")
-                continue
-
-            latest = files[-1]
-            age_minutes = self._file_age_minutes(latest)
-
-            if (
-                self.max_age_minutes > 0
-                and age_minutes is not None
-                and age_minutes > self.max_age_minutes
-            ):
-                print(
-                    f"[Clouds] Produkt {normalized} je starý "
-                    f"{age_minutes} minut, zkouším další produkt."
-                )
-                continue
-
-            return normalized, latest, product_url
-
-        detail = "; ".join(errors) if errors else "bez detailu"
-        raise RuntimeError(
-            "Na serveru ČHMÚ nebyl nalezen čerstvý použitelný "
-            f"satelitní snímek ({detail})."
-        )
-
-    def download(self):
-        """Stáhne nejnovější satelitní snímek oblačnosti z ČHMÚ."""
-        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-        try:
-            product, latest, product_url = self._find_latest_product()
-
-            cache_file = self._cache_file(product)
-            cache_source_file = self._cache_source_file(product)
-
-            if cache_file.exists() and cache_source_file.exists():
-                cached_name = cache_source_file.read_text(
-                    encoding="utf-8"
-                ).strip()
-                if cached_name == latest:
-                    return product, latest, cache_file
-
-            response = requests.get(
-                product_url + latest,
-                headers=self.REQUEST_HEADERS,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-
-            if not response.content:
-                raise RuntimeError("Stažený cloud snímek je prázdný.")
-
-            temporary_file = cache_file.with_suffix(".tmp")
-            temporary_file.write_bytes(response.content)
-            temporary_file.replace(cache_file)
-
-            cache_source_file.write_text(latest, encoding="utf-8")
-
-            return product, latest, cache_file
-
-        except (requests.RequestException, RuntimeError) as error:
-            for fallback_product in self._product_order():
-                cache_file = self._cache_file(fallback_product)
-                if cache_file.exists():
-                    print(
-                        "[Clouds] ČHMÚ není dostupné, používám poslední cache: "
-                        f"{error}"
-                    )
-                    return (
-                        fallback_product,
-                        self._get_cached_filename(fallback_product),
-                        cache_file,
-                    )
-
-            raise
-
-    def load(self, image_file):
-        return Image.open(image_file).convert("RGB")
+    def _cache_source_file(self, product):
+        return self.cache_dir / f"latest_{product}.txt"
 
     def _parse_timestamp(self, filename):
         match = re.search(r"(\d{12})_geo_", filename)
@@ -264,131 +118,195 @@ class CloudsLayer(Layer):
         except ValueError:
             return None
 
-    def _prepare_source(self, source):
-        if self.source_blur_radius <= 0:
-            return source
-
-        return source.filter(
-            ImageFilter.GaussianBlur(self.source_blur_radius)
+    def _get_latest_filename_for_product(self, product):
+        response = requests.get(
+            self._product_url(product),
+            headers=self.REQUEST_HEADERS,
+            timeout=self.timeout,
         )
+        response.raise_for_status()
+
+        pattern = rf'href=["\']([^"\']+_geo_{re.escape(product)}_cz\.jpg)["\']'
+        files = re.findall(pattern, response.text, flags=re.IGNORECASE)
+
+        if not files:
+            raise RuntimeError(
+                f"Na serveru ČHMÚ nebyl nalezen snímek produktu {product}."
+            )
+
+        return sorted(set(files))[-1]
+
+    def _download_file(self, product, filename):
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        cache_file = self._cache_file(product)
+        cache_source_file = self._cache_source_file(product)
+
+        if cache_file.exists() and cache_source_file.exists():
+            cached_name = cache_source_file.read_text(encoding="utf-8").strip()
+            if cached_name == filename:
+                return cache_file
+
+        response = requests.get(
+            self._product_url(product) + filename,
+            headers=self.REQUEST_HEADERS,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+        if not response.content:
+            raise RuntimeError("Stažený cloud snímek je prázdný.")
+
+        temporary_file = cache_file.with_suffix(".tmp")
+        temporary_file.write_bytes(response.content)
+        temporary_file.replace(cache_file)
+        cache_source_file.write_text(filename, encoding="utf-8")
+
+        return cache_file
+
+    def download(self):
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        fallback_order = []
+        for product in [self.product, "vis-ir", "ir108", "24m"]:
+            if product not in fallback_order:
+                fallback_order.append(product)
+
+        last_error = None
+
+        for product in fallback_order:
+            try:
+                filename = self._get_latest_filename_for_product(product)
+                timestamp = self._parse_timestamp(filename)
+
+                if timestamp is not None:
+                    age = dt.datetime.utcnow() - timestamp
+                    age_minutes = max(0, int(age.total_seconds() // 60))
+                    if product == self.product and age_minutes > self.max_age_minutes:
+                        print(
+                            f"[Clouds] Produkt {product} je starý {age_minutes} minut, zkouším další produkt."
+                        )
+                        continue
+
+                cache_file = self._download_file(product, filename)
+                return product, filename, cache_file
+
+            except Exception as error:
+                last_error = error
+
+        for product in fallback_order:
+            cache_file = self._cache_file(product)
+            if cache_file.exists():
+                print(
+                    "[Clouds] ČHMÚ není dostupné, používám poslední cache: "
+                    f"{last_error}"
+                )
+                cache_source_file = self._cache_source_file(product)
+                filename = cache_source_file.read_text(encoding="utf-8").strip() if cache_source_file.exists() else cache_file.name
+                return product, filename, cache_file
+
+        raise RuntimeError(last_error or "Cloud snímek se nepodařilo získat.")
+
+    def load(self, image_file):
+        source = Image.open(image_file).convert("RGB")
+        if self.save_debug_layer:
+            self.source_debug_file.parent.mkdir(parents=True, exist_ok=True)
+            source.save(self.source_debug_file, quality=95)
+        return source
+
+    def _mask_timestamp_overlay(self, strength):
+        # V IR snímcích je vpravo nahoře černý pruh s bílým timestampem.
+        h, w = strength.shape
+        strength[0:min(24, h), max(0, w - 260):w] = 0.0
+        return strength
 
     def create_image(self, source, product):
-        """
-        Převede satelitní JPG na poloprůhlednou vrstvu oblačnosti.
+        prepared = source
+        if self.source_blur_radius > 0:
+            prepared = prepared.filter(
+                ImageFilter.GaussianBlur(self.source_blur_radius)
+            )
 
-        VIS-IR používá tmavý povrch a světlé žluté, bílé nebo namodralé
-        mraky. Maska proto kombinuje jas, barevný nádech oblačnosti a
-        potlačení zeleného povrchu. Není zde tvrdý vysoký práh, takže
-        zůstane viditelná i slabší oblačnost.
-        """
-        prepared = self._prepare_source(source)
         data = np.asarray(prepared, dtype=np.float32)
-
         r = data[:, :, 0]
         g = data[:, :, 1]
         b = data[:, :, 2]
+        gray = (0.299 * r) + (0.587 * g) + (0.114 * b)
 
-        brightness = (0.299 * r) + (0.587 * g) + (0.114 * b)
-        saturation = np.max(data, axis=2) - np.min(data, axis=2)
+        background_img = Image.fromarray(gray.astype(np.uint8), mode="L")
+        if self.background_blur_radius > 0:
+            background_img = background_img.filter(
+                ImageFilter.GaussianBlur(self.background_blur_radius)
+            )
+        background = np.asarray(background_img, dtype=np.float32)
 
-        green_dominance = np.clip(
-            (g - ((r + b) / 2.0) - 2.0) / 30.0,
-            0.0,
-            1.0,
-        )
-
-        general_brightness = np.clip(
-            (brightness - self.base_brightness) / 85.0,
-            0.0,
-            1.0,
-        )
-        general_brightness *= 1.0 - (0.65 * green_dominance)
-
-        white_strength = np.clip(
-            (brightness - (self.base_brightness + 6.0)) / 95.0,
-            0.0,
-            1.0,
-        )
-        white_strength *= np.clip(
-            (65.0 - saturation) / 65.0,
-            0.0,
-            1.0,
-        )
-
-        yellow_strength = np.clip(
-            (np.minimum(r, g) - b + 3.0) / 35.0,
-            0.0,
-            1.0,
-        )
-        yellow_strength *= np.clip(
-            (np.minimum(r, g) - self.base_brightness) / 100.0,
-            0.0,
-            1.0,
-        )
-
-        violet_strength = np.clip(
-            (((r + b) / 2.0) - g + 5.0) / 35.0,
-            0.0,
-            1.0,
-        )
-        violet_strength *= np.clip(
-            (np.maximum(r, b) - self.base_brightness) / 100.0,
-            0.0,
-            1.0,
-        )
+        detail = gray - background
 
         if product == "ir108":
-            cloud_strength = np.clip(
-                (brightness - 52.0) / 105.0,
-                0.0,
-                1.0,
-            )
+            # IR snímek je v podstatě šedotónový. Reálné mraky chceme podle
+            # lokálního zesvětlení vůči okolí, ne podle absolutního jasu,
+            # jinak se jako mrak tváří téměř celý snímek.
+            local_strength = np.clip((detail - 2.0) / 22.0, 0.0, 1.0)
+            abs_strength = np.clip((gray - 150.0) / 70.0, 0.0, 1.0)
+            cloud_strength = np.maximum(local_strength, abs_strength * 0.55)
+            color_rgb = np.dstack([
+                np.full_like(gray, 248.0),
+                np.full_like(gray, 248.0),
+                np.full_like(gray, 248.0),
+            ])
         else:
+            saturation = np.max(data, axis=2) - np.min(data, axis=2)
+
+            white_strength = np.clip((gray - 150.0) / 75.0, 0.0, 1.0)
+            white_strength *= np.clip((90.0 - saturation) / 90.0, 0.0, 1.0)
+
+            blue_strength = np.clip((b - 120.0) / 100.0, 0.0, 1.0)
+            blue_strength *= np.clip((b - g + 14.0) / 80.0, 0.0, 1.0)
+            blue_strength *= np.clip((b - r + 10.0) / 80.0, 0.0, 1.0)
+
+            yellow_base = np.minimum(r, g)
+            yellow_strength = np.clip((yellow_base - 135.0) / 110.0, 0.0, 1.0)
+            yellow_strength *= np.clip((r - b + 18.0) / 100.0, 0.0, 1.0)
+            yellow_strength *= np.clip((g - b + 18.0) / 100.0, 0.0, 1.0)
+
+            local_strength = np.clip((detail - 2.0) / 18.0, 0.0, 1.0)
+
             cloud_strength = np.maximum.reduce([
-                general_brightness * 0.65,
-                white_strength * 0.90,
-                yellow_strength,
-                violet_strength,
+                white_strength,
+                blue_strength * 0.85,
+                yellow_strength * 0.75,
+                local_strength * 0.65,
             ])
 
+            color_rgb = np.dstack([
+                250.0 - (blue_strength * 10.0),
+                250.0 - (yellow_strength * 4.0),
+                250.0 - (yellow_strength * 16.0),
+            ])
+
+        if self.base_brightness > 0:
+            base_strength = np.clip((gray - self.base_brightness) / 255.0, 0.0, 1.0)
+            cloud_strength = np.maximum(cloud_strength, base_strength * 0.10)
+
+        cloud_strength = self._mask_timestamp_overlay(cloud_strength)
+
         if self.gamma > 0:
-            cloud_strength = np.power(
-                np.clip(cloud_strength, 0.0, 1.0),
-                self.gamma,
-            )
+            cloud_strength = np.power(cloud_strength, self.gamma)
 
         cloud_strength[cloud_strength < self.min_strength] = 0.0
 
-        alpha = np.clip(
-            cloud_strength * self.opacity * 255.0,
-            0.0,
-            255.0,
-        )
-
-        # Slabá oblačnost je světle šedá, silná téměř bílá. Na světlé
-        # topografické mapě je tak vrstva viditelnější než čistě bílá.
-        cloud_gray = np.clip(
-            190.0 + (55.0 * cloud_strength),
-            0.0,
-            255.0,
-        ).astype(np.uint8)
+        alpha = np.clip(cloud_strength * self.opacity * 255.0, 0.0, 255.0)
 
         rgba = np.zeros((source.height, source.width, 4), dtype=np.uint8)
-        rgba[:, :, 0] = cloud_gray
-        rgba[:, :, 1] = cloud_gray
-        rgba[:, :, 2] = np.clip(
-            cloud_gray.astype(np.int16) + 3,
-            0,
-            255,
-        ).astype(np.uint8)
+        rgba[:, :, :3] = np.clip(color_rgb, 0.0, 255.0).astype(np.uint8)
         rgba[:, :, 3] = alpha.astype(np.uint8)
 
-        layer = Image.fromarray(rgba, "RGBA")
+        layer = Image.fromarray(rgba, mode="RGBA")
+        visible_pixels = int(np.count_nonzero(rgba[:, :, 3]))
 
         return layer, {
-            "visible_pixels": int(np.count_nonzero(rgba[:, :, 3])),
+            "visible_pixels": visible_pixels,
             "mean_alpha": float(alpha.mean()),
-            "max_alpha": int(alpha.max()),
+            "max_alpha": int(alpha.max()) if alpha.size else 0,
         }
 
     def project_to_canvas(self, layer, canvas, basemap):
@@ -430,13 +348,10 @@ class CloudsLayer(Layer):
             fillcolor=(0, 0, 0, 0),
         )
 
-        # Satelitní zdroj má proti lokální mapě nízké rozlišení. Změkčení
-        # až po promítnutí odstraní zvětšené bloky jednotlivých pixelů.
         if self.projected_blur_radius > 0:
-            alpha = projected.getchannel("A").filter(
+            projected = projected.filter(
                 ImageFilter.GaussianBlur(self.projected_blur_radius)
             )
-            projected.putalpha(alpha)
 
         visible_pixels = int(
             np.count_nonzero(np.asarray(projected.getchannel("A")))
@@ -450,7 +365,7 @@ class CloudsLayer(Layer):
             "visible_pixels": visible_pixels,
         }
 
-    def save_debug_images(self, projected, canvas, image_file):
+    def save_debug_images(self, projected, canvas):
         if not self.save_debug_layer:
             return
 
@@ -460,8 +375,6 @@ class CloudsLayer(Layer):
         preview = canvas.copy()
         preview.paste(projected, (0, 0), projected)
         preview.save(self.preview_file)
-
-        shutil.copy2(image_file, self.source_debug_file)
 
     def draw(self, canvas, basemap):
         try:
@@ -474,15 +387,15 @@ class CloudsLayer(Layer):
                 basemap,
             )
 
-            self.save_debug_images(projected, canvas, image_file)
+            self.save_debug_images(projected, canvas)
             canvas.paste(projected, (0, 0), projected)
 
-            age_minutes = self._file_age_minutes(filename)
-            age_text = (
-                f"{age_minutes} minut"
-                if age_minutes is not None
-                else "neznámé"
-            )
+            timestamp = self._parse_timestamp(filename)
+            age_text = "neznámé"
+            if timestamp is not None:
+                age = dt.datetime.utcnow() - timestamp
+                age_minutes = max(0, int(age.total_seconds() // 60))
+                age_text = f"{age_minutes} minut"
 
             print(f"[Clouds] Soubor: {filename}")
             print(f"[Clouds] Produkt: {product}")
@@ -509,21 +422,7 @@ class CloudsLayer(Layer):
             if self.save_debug_layer:
                 print(f"[Clouds] Uložena vrstva: {self.debug_file}")
                 print(f"[Clouds] Uložen náhled: {self.preview_file}")
-                print(
-                    "[Clouds] Uložen zdrojový snímek: "
-                    f"{self.source_debug_file}"
-                )
-
-            if source_info["visible_pixels"] == 0:
-                print(
-                    "[Clouds] Zdrojová maska je prázdná. Sniž "
-                    "CLOUDS_BASE_BRIGHTNESS nebo CLOUDS_MIN_STRENGTH."
-                )
-            elif projection_info["visible_pixels"] == 0:
-                print(
-                    "[Clouds] Oblačnost ve zdroji existuje, ale mimo "
-                    "aktuální zobrazenou oblast."
-                )
+                print(f"[Clouds] Uložen zdrojový snímek: {self.source_debug_file}")
 
         except Exception as error:
             print(f"[Clouds] Chyba: {error}")
