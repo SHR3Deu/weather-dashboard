@@ -3,6 +3,7 @@
 import shutil
 
 import config
+from layers.aircraft import AircraftLayer
 from layers.cities import CitiesLayer
 from layers.clouds import CloudsLayer
 from layers.debug import DebugLayer
@@ -10,7 +11,6 @@ from layers.radar import RadarLayer
 from layers.scale import ScaleLayer
 from utils.basemap import Basemap
 
-# from layers.aircraft import AircraftLayer
 # from layers.lightning import LightningLayer
 # from layers.weather import WeatherLayer
 
@@ -19,15 +19,17 @@ from utils.basemap import Basemap
 # 1) mapa
 # 2) oblačnost
 # 3) radar / srážky
-# 4) popisky a měřítko
+# 4) debug a města
+# 5) letadla a jejich trajektorie
+# 6) měřítko úplně nahoře
 LAYERS = {
     "clouds": CloudsLayer(),
     "radar": RadarLayer(),
     "debug": DebugLayer(),
     "cities": CitiesLayer(),
+    "aircraft": AircraftLayer(),
     "scale": ScaleLayer(),
     # "lightning": LightningLayer(),
-    # "aircraft": AircraftLayer(),
     # "weather": WeatherLayer(),
 }
 
