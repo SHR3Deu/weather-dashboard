@@ -2,6 +2,8 @@
 
 import shutil
 
+from PIL import Image
+
 import config
 from layers.aircraft import AircraftLayer
 from layers.cities import CitiesLayer
@@ -34,6 +36,22 @@ LAYERS = {
 }
 
 
+def build_hmi_image(source_image):
+    hmi_width = int(getattr(config, "HMI_WIDTH", 0))
+    hmi_height = int(getattr(config, "HMI_HEIGHT", 0))
+
+    if hmi_width <= 0 or hmi_height <= 0:
+        raise ValueError("HMI_WIDTH a HMI_HEIGHT musí být kladná čísla.")
+
+    if source_image.size == (hmi_width, hmi_height):
+        return source_image.copy()
+
+    return source_image.resize(
+        (hmi_width, hmi_height),
+        Image.Resampling.LANCZOS,
+    )
+
+
 def main():
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -53,14 +71,23 @@ def main():
         layer.draw(canvas, basemap)
 
     canvas.save(config.OUTPUT_FILE)
+    print(f"Saved full-size : {config.OUTPUT_FILE}")
+
+    hmi_image = build_hmi_image(canvas)
+    hmi_output_file = getattr(
+        config,
+        "HMI_OUTPUT_FILE",
+        config.OUTPUT_DIR / "weather_hmi.png",
+    )
+    hmi_image.save(hmi_output_file)
+    print(
+        "Saved HMI      : "
+        f"{hmi_output_file} ({config.HMI_WIDTH}x{config.HMI_HEIGHT})"
+    )
 
     if hasattr(config, "PUBLIC_FILE"):
-        shutil.copy2(config.OUTPUT_FILE, config.PUBLIC_FILE)
-
-    print(f"Saved : {config.OUTPUT_FILE}")
-
-    if hasattr(config, "PUBLIC_FILE"):
-        print(f"Copied: {config.PUBLIC_FILE}")
+        shutil.copy2(hmi_output_file, config.PUBLIC_FILE)
+        print(f"Copied         : {config.PUBLIC_FILE}")
 
 
 if __name__ == "__main__":

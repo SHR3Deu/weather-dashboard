@@ -16,7 +16,15 @@ LOGS = BASE_DIR / "logs"
 #
 # Výstupy
 #
+# Velký pracovní / debug výstup.
 OUTPUT_FILE = OUTPUT_DIR / "weather.png"
+
+# Finální výstup pro HMI displej.
+HMI_WIDTH = 800
+HMI_HEIGHT = 480
+HMI_OUTPUT_FILE = OUTPUT_DIR / "weather_hmi.png"
+
+# Soubor kopírovaný do Node-RED public adresáře.
 PUBLIC_FILE = Path.home() / ".node-red" / "public" / "weather.png"
 
 
@@ -155,8 +163,8 @@ CLOUDS_SOURCE_DEBUG_FILE = OUTPUT_DIR / "latest_clouds_source.jpg"
 # Letecký provoz – ADSB.lol
 #
 # Velikost symbolu letadla a textu v pixelech.
-AIRCRAFT_ICON_SIZE = 48
-AIRCRAFT_TEXT_SIZE = 32
+AIRCRAFT_ICON_SIZE = 28
+AIRCRAFT_TEXT_SIZE = 14
 
 # Co se zobrazí v popisku. Položky odděluj čárkami.
 # Povolené hodnoty:
@@ -172,9 +180,9 @@ AIRCRAFT_LABEL_SEPARATOR = " | "
 AIRCRAFT_LABEL_OFFSET = (18, -16)
 
 # Trajektorie: 0 = vypnuto, 2 = doporučené, 10 = maximum.
-AIRCRAFT_TRAJECTORY_WIDTH = 10
+AIRCRAFT_TRAJECTORY_WIDTH = 2
 AIRCRAFT_TRAJECTORY_COLOR = "#FFD400"
-AIRCRAFT_TRAJECTORY_OUTLINE_COLOR = "#FFD400"
+AIRCRAFT_TRAJECTORY_OUTLINE_COLOR = "#000000"
 AIRCRAFT_TRAJECTORY_HISTORY_MINUTES = 30
 AIRCRAFT_TRAJECTORY_MAX_POINTS = 60
 AIRCRAFT_TRAJECTORY_MIN_DISTANCE_METERS = 250
